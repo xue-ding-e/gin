@@ -794,35 +794,56 @@ func (c *Context) ShouldBind(obj any) error {
 func (c *Context) ShouldBindJSON(obj any) error {
 	return c.ShouldBindWith(obj, binding.JSON)
 }
+func (c *Context) ShouldBindJSON2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.JSON)
+}
 
 // ShouldBindXML is a shortcut for c.ShouldBindWith(obj, binding.XML).
 func (c *Context) ShouldBindXML(obj any) error {
 	return c.ShouldBindWith(obj, binding.XML)
+}
+func (c *Context) ShouldBindXML2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.XML)
 }
 
 // ShouldBindQuery is a shortcut for c.ShouldBindWith(obj, binding.Query).
 func (c *Context) ShouldBindQuery(obj any) error {
 	return c.ShouldBindWith(obj, binding.Query)
 }
+func (c *Context) ShouldBindQuery2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.Query)
+}
 
 // ShouldBindYAML is a shortcut for c.ShouldBindWith(obj, binding.YAML).
 func (c *Context) ShouldBindYAML(obj any) error {
 	return c.ShouldBindWith(obj, binding.YAML)
+}
+func (c *Context) ShouldBindYAML2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.YAML)
 }
 
 // ShouldBindTOML is a shortcut for c.ShouldBindWith(obj, binding.TOML).
 func (c *Context) ShouldBindTOML(obj any) error {
 	return c.ShouldBindWith(obj, binding.TOML)
 }
+func (c *Context) ShouldBindTOML2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.TOML)
+}
 
 // ShouldBindPlain is a shortcut for c.ShouldBindWith(obj, binding.Plain).
 func (c *Context) ShouldBindPlain(obj any) error {
 	return c.ShouldBindWith(obj, binding.Plain)
 }
+func (c *Context) ShouldBindPlain2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.Plain)
+}
 
 // ShouldBindHeader is a shortcut for c.ShouldBindWith(obj, binding.Header).
 func (c *Context) ShouldBindHeader(obj any) error {
 	return c.ShouldBindWith(obj, binding.Header)
+}
+func (c *Context) ShouldBindHeader2(obj any) error {
+	return c.ShouldBindWith2(obj, binding.Header)
 }
 
 // ShouldBindUri binds the passed struct pointer using the specified binding engine.
@@ -841,6 +862,10 @@ type ValidatorHook interface {
 // ShouldBindWith binds the passed struct pointer using the specified binding engine.
 // See the binding package.
 func (c *Context) ShouldBindWith(obj any, b binding.Binding) error {
+	return b.Bind(c.Request, obj)
+}
+
+func (c *Context) ShouldBindWith2(obj any, b binding.Binding) error {
 	if err := b.Bind(c.Request, obj); err != nil {
 		return err
 	}
