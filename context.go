@@ -856,7 +856,7 @@ func (c *Context) ShouldBindUri(obj any) error {
 }
 
 type ValidatorHook interface {
-	Validate(c *Context) error
+	AfterBind(c *Context) error
 }
 
 // ShouldBindWith binds the passed struct pointer using the specified binding engine.
@@ -870,7 +870,7 @@ func (c *Context) ShouldBindWith2(obj any, b binding.Binding) error {
 		return err
 	}
 	if validator, ok := obj.(ValidatorHook); ok {
-		return validator.Validate(c)
+		return validator.AfterBind(c)
 	}
 	return nil
 }
