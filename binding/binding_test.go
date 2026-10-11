@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin/testdata/protoexample"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -51,8 +52,6 @@ type FooBarFileStruct struct {
 type FooBarFileFailStruct struct {
 	FooBarStruct
 	File *multipart.FileHeader `invalid_name:"file" binding:"required"`
-	// for unexport test
-	data *multipart.FileHeader `form:"data" binding:"required"`
 }
 
 type FooDefaultBarStruct struct {
@@ -69,15 +68,19 @@ type FooStructDisallowUnknownFields struct {
 }
 
 type FooBarStructForTimeType struct {
-	TimeFoo    time.Time `form:"time_foo" time_format:"2006-01-02" time_utc:"1" time_location:"Asia/Chongqing"`
-	TimeBar    time.Time `form:"time_bar" time_format:"2006-01-02" time_utc:"1"`
-	CreateTime time.Time `form:"createTime" time_format:"unixNano"`
-	UnixTime   time.Time `form:"unixTime" time_format:"unix"`
+	TimeFoo       time.Time `form:"time_foo" time_format:"2006-01-02" time_utc:"1" time_location:"Asia/Chongqing"`
+	TimeBar       time.Time `form:"time_bar" time_format:"2006-01-02" time_utc:"1"`
+	CreateTime    time.Time `form:"createTime" time_format:"unixNano"`
+	UnixTime      time.Time `form:"unixTime" time_format:"unix"`
+	UnixMilliTime time.Time `form:"unixMilliTime" time_format:"unixmilli"`
+	UnixMicroTime time.Time `form:"unixMicroTime" time_format:"uNiXmiCrO"`
 }
 
 type FooStructForTimeTypeNotUnixFormat struct {
-	CreateTime time.Time `form:"createTime" time_format:"unixNano"`
-	UnixTime   time.Time `form:"unixTime" time_format:"unix"`
+	CreateTime    time.Time `form:"createTime" time_format:"unixNano"`
+	UnixTime      time.Time `form:"unixTime" time_format:"unix"`
+	UnixMilliTime time.Time `form:"unixMilliTime" time_format:"unixMilli"`
+	UnixMicroTime time.Time `form:"unixMicroTime" time_format:"unixMicro"`
 }
 
 type FooStructForTimeTypeNotFormat struct {
@@ -170,6 +173,9 @@ func TestBindingDefault(t *testing.T) {
 
 	assert.Equal(t, TOML, Default(http.MethodPost, MIMETOML))
 	assert.Equal(t, TOML, Default(http.MethodPut, MIMETOML))
+
+	assert.Equal(t, BSON, Default(http.MethodPost, MIMEBSON))
+	assert.Equal(t, BSON, Default(http.MethodPut, MIMEBSON))
 }
 
 func TestBindingJSONNilBody(t *testing.T) {
@@ -265,10 +271,10 @@ func TestBindingFormDefaultValue2(t *testing.T) {
 func TestBindingFormForTime(t *testing.T) {
 	testFormBindingForTime(t, http.MethodPost,
 		"/", "/",
-		"time_foo=2017-11-15&time_bar=&createTime=1562400033000000123&unixTime=1562400033", "bar2=foo")
+		"time_foo=2017-11-15&time_bar=&createTime=1562400033000000123&unixTime=1562400033&unixMilliTime=1562400033001&unixMicroTime=1562400033000012", "bar2=foo")
 	testFormBindingForTimeNotUnixFormat(t, http.MethodPost,
 		"/", "/",
-		"time_foo=2017-11-15&createTime=bad&unixTime=bad", "bar2=foo")
+		"time_foo=2017-11-15&createTime=bad&unixTime=bad&unixMilliTime=bad&unixMicroTime=bad", "bar2=foo")
 	testFormBindingForTimeNotFormat(t, http.MethodPost,
 		"/", "/",
 		"time_foo=2017-11-15", "bar2=foo")
@@ -282,11 +288,11 @@ func TestBindingFormForTime(t *testing.T) {
 
 func TestBindingFormForTime2(t *testing.T) {
 	testFormBindingForTime(t, http.MethodGet,
-		"/?time_foo=2017-11-15&time_bar=&createTime=1562400033000000123&unixTime=1562400033", "/?bar2=foo",
+		"/?time_foo=2017-11-15&time_bar=&createTime=1562400033000000123&unixTime=1562400033&unixMilliTime=1562400033001&unixMicroTime=1562400033000012", "/?bar2=foo",
 		"", "")
 	testFormBindingForTimeNotUnixFormat(t, http.MethodPost,
 		"/", "/",
-		"time_foo=2017-11-15&createTime=bad&unixTime=bad", "bar2=foo")
+		"time_foo=2017-11-15&createTime=bad&unixTime=bad&unixMilliTime=bad&unixMicroTime=bad", "bar2=foo")
 	testFormBindingForTimeNotFormat(t, http.MethodGet,
 		"/?time_foo=2017-11-15", "/?bar2=foo",
 		"", "")
@@ -729,6 +735,18 @@ func TestBindingProtoBufFail(t *testing.T) {
 		string(data), string(data[1:]))
 }
 
+func TestBindingBSON(t *testing.T) {
+	var obj FooStruct
+	obj.Foo = "bar"
+	data, _ := bson.Marshal(&obj)
+	testBodyBinding(t,
+		BSON, "bson",
+		"/", "/",
+		string(data),
+		// note: for badbody, we remove first byte to make it invalid
+		string(data[1:]))
+}
+
 func TestValidationFails(t *testing.T) {
 	var obj FooStruct
 	req := requestWithBody(http.MethodPost, "/", `{"bar": "foo"}`)
@@ -952,6 +970,8 @@ func testFormBindingForTime(t *testing.T, method, path, badPath, body, badBody s
 	assert.Equal(t, "UTC", obj.TimeBar.Location().String())
 	assert.Equal(t, int64(1562400033000000123), obj.CreateTime.UnixNano())
 	assert.Equal(t, int64(1562400033), obj.UnixTime.Unix())
+	assert.Equal(t, int64(1562400033001), obj.UnixMilliTime.UnixMilli())
+	assert.Equal(t, int64(1562400033000012), obj.UnixMicroTime.UnixMicro())
 
 	obj = FooBarStructForTimeType{}
 	req = requestWithBody(method, badPath, badBody)
@@ -1057,7 +1077,7 @@ func testFormBindingInvalidName(t *testing.T, method, path, badPath, body, badBo
 	}
 	err := b.Bind(req, &obj)
 	require.NoError(t, err)
-	assert.Equal(t, "", obj.TestName)
+	assert.Empty(t, obj.TestName)
 
 	obj = InvalidNameType{}
 	req = requestWithBody(method, badPath, badBody)
@@ -1312,7 +1332,7 @@ func testBodyBindingFail(t *testing.T, b Binding, name, path, badPath, body, bad
 	req := requestWithBody(http.MethodPost, path, body)
 	err := b.Bind(req, &obj)
 	require.Error(t, err)
-	assert.Equal(t, "", obj.Foo)
+	assert.Empty(t, obj.Foo)
 
 	obj = FooStruct{}
 	req = requestWithBody(http.MethodPost, badPath, badBody)

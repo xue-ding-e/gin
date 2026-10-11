@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,15 +16,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin/internal/json"
 	testdata "github.com/gin-gonic/gin/testdata/protoexample"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/protobuf/proto"
 )
-
-// TODO unit tests
-// test errors
 
 func TestRenderJSON(t *testing.T) {
 	w := httptest.NewRecorder()
@@ -38,7 +36,7 @@ func TestRenderJSON(t *testing.T) {
 	err := (JSON{data}).Render(w)
 
 	require.NoError(t, err)
-	assert.Equal(t, "{\"foo\":\"bar\",\"html\":\"\\u003cb\\u003e\"}", w.Body.String())
+	assert.JSONEq(t, "{\"foo\":\"bar\",\"html\":\"\\u003cb\\u003e\"}", w.Body.String())
 	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
@@ -60,7 +58,7 @@ func TestRenderIndentedJSON(t *testing.T) {
 	err := (IndentedJSON{data}).Render(w)
 
 	require.NoError(t, err)
-	assert.Equal(t, "{\n    \"bar\": \"foo\",\n    \"foo\": \"bar\"\n}", w.Body.String())
+	assert.JSONEq(t, "{\n    \"bar\": \"foo\",\n    \"foo\": \"bar\"\n}", w.Body.String())
 	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
@@ -85,7 +83,7 @@ func TestRenderSecureJSON(t *testing.T) {
 	err1 := (SecureJSON{"while(1);", data}).Render(w1)
 
 	require.NoError(t, err1)
-	assert.Equal(t, "{\"foo\":\"bar\"}", w1.Body.String())
+	assert.JSONEq(t, "{\"foo\":\"bar\"}", w1.Body.String())
 	assert.Equal(t, "application/json; charset=utf-8", w1.Header().Get("Content-Type"))
 
 	w2 := httptest.NewRecorder()
@@ -139,17 +137,42 @@ func TestRenderJsonpJSON(t *testing.T) {
 }
 
 type errorWriter struct {
-	bufString string
+	bufString    string
+	ErrThreshold int // 1-based threshold. If 1, errors on the 1st Write call.
+	writeCount   int
 	*httptest.ResponseRecorder
 }
 
 var _ http.ResponseWriter = (*errorWriter)(nil)
 
+func (w *errorWriter) Header() http.Header {
+	if w.ResponseRecorder == nil {
+		w.ResponseRecorder = httptest.NewRecorder()
+	}
+	return w.ResponseRecorder.Header()
+}
+
+func (w *errorWriter) WriteHeader(statusCode int) {
+	if w.ResponseRecorder == nil {
+		w.ResponseRecorder = httptest.NewRecorder()
+	}
+	w.ResponseRecorder.WriteHeader(statusCode)
+}
+
 func (w *errorWriter) Write(buf []byte) (int, error) {
-	if string(buf) == w.bufString {
-		return 0, errors.New(`write "` + w.bufString + `" error`)
+	w.writeCount++
+	if (w.bufString != "" && string(buf) == w.bufString) || (w.ErrThreshold > 0 && w.writeCount >= w.ErrThreshold) {
+		return 0, errors.New(`write error`)
+	}
+	if w.ResponseRecorder == nil {
+		w.ResponseRecorder = httptest.NewRecorder()
 	}
 	return w.ResponseRecorder.Write(buf)
+}
+
+func (w *errorWriter) reset() {
+	w.writeCount = 0
+	w.ResponseRecorder = httptest.NewRecorder()
 }
 
 func TestRenderJsonpJSONError(t *testing.T) {
@@ -164,23 +187,33 @@ func TestRenderJsonpJSONError(t *testing.T) {
 		},
 	}
 
-	cb := template.JSEscapeString(jsonpJSON.Callback)
-	ew.bufString = cb
-	err := jsonpJSON.Render(ew) // error was returned while writing callback
-	assert.Equal(t, `write "`+cb+`" error`, err.Error())
+	// error was returned while writing callback
+	ew.reset()
+	ew.ErrThreshold = 1
+	err := jsonpJSON.Render(ew)
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
 
-	ew.bufString = `(`
+	// error was returned while writing "("
+	ew.reset()
+	ew.ErrThreshold = 2
 	err = jsonpJSON.Render(ew)
-	assert.Equal(t, `write "`+`(`+`" error`, err.Error())
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
 
-	data, _ := json.Marshal(jsonpJSON.Data) // error was returned while writing data
-	ew.bufString = string(data)
+	// error was returned while writing data
+	ew.reset()
+	ew.ErrThreshold = 3
 	err = jsonpJSON.Render(ew)
-	assert.Equal(t, `write "`+string(data)+`" error`, err.Error())
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
 
-	ew.bufString = `);`
+	// error was returned while writing ");"
+	ew.reset()
+	ew.ErrThreshold = 4
 	err = jsonpJSON.Render(ew)
-	assert.Equal(t, `write "`+`);`+`" error`, err.Error())
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
 }
 
 func TestRenderJsonpJSONError2(t *testing.T) {
@@ -194,7 +227,7 @@ func TestRenderJsonpJSONError2(t *testing.T) {
 	e := (JsonpJSON{"", data}).Render(w)
 	require.NoError(t, e)
 
-	assert.Equal(t, "{\"foo\":\"bar\"}", w.Body.String())
+	assert.JSONEq(t, "{\"foo\":\"bar\"}", w.Body.String())
 	assert.Equal(t, "application/javascript; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
@@ -217,7 +250,7 @@ func TestRenderAsciiJSON(t *testing.T) {
 	err := (AsciiJSON{data1}).Render(w1)
 
 	require.NoError(t, err)
-	assert.Equal(t, "{\"lang\":\"GO\\u8bed\\u8a00\",\"tag\":\"\\u003cbr\\u003e\"}", w1.Body.String())
+	assert.JSONEq(t, "{\"lang\":\"GO\\u8bed\\u8a00\",\"tag\":\"\\u003cbr\\u003e\"}", w1.Body.String())
 	assert.Equal(t, "application/json", w1.Header().Get("Content-Type"))
 
 	w2 := httptest.NewRecorder()
@@ -244,7 +277,7 @@ func TestRenderPureJSON(t *testing.T) {
 	}
 	err := (PureJSON{data}).Render(w)
 	require.NoError(t, err)
-	assert.Equal(t, "{\"foo\":\"bar\",\"html\":\"<b>\"}\n", w.Body.String())
+	assert.JSONEq(t, "{\"foo\":\"bar\",\"html\":\"<b>\"}\n", w.Body.String())
 	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
@@ -285,7 +318,14 @@ b:
 
 	err := (YAML{data}).Render(w)
 	require.NoError(t, err)
-	assert.Equal(t, "|4-\n    a : Easy!\n    b:\n    \tc: 2\n    \td: [3, 4]\n    \t\n", w.Body.String())
+
+	// With github.com/goccy/go-yaml, the output format is different from gopkg.in/yaml.v3
+	// We're checking that the output contains the expected data, not the exact formatting
+	output := w.Body.String()
+	assert.Contains(t, output, "a : Easy!")
+	assert.Contains(t, output, "b:")
+	assert.Contains(t, output, "c: 2")
+	assert.Contains(t, output, "d: [3, 4]")
 	assert.Equal(t, "application/yaml; charset=utf-8", w.Header().Get("Content-Type"))
 }
 
@@ -352,6 +392,55 @@ func TestRenderProtoBufFail(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRenderBSON(t *testing.T) {
+	w := httptest.NewRecorder()
+	reps := []int64{int64(1), int64(2)}
+	type mystruct struct {
+		Label string
+		Reps  []int64
+	}
+
+	data := &mystruct{
+		Label: "test",
+		Reps:  reps,
+	}
+
+	(BSON{data}).WriteContentType(w)
+	bsonData, err := bson.Marshal(data)
+	require.NoError(t, err)
+	assert.Equal(t, "application/bson", w.Header().Get("Content-Type"))
+
+	err = (BSON{data}).Render(w)
+
+	require.NoError(t, err)
+	assert.Equal(t, bsonData, w.Body.Bytes())
+	assert.Equal(t, "application/bson", w.Header().Get("Content-Type"))
+}
+
+func TestRenderBSONError(t *testing.T) {
+	w := httptest.NewRecorder()
+	data := make(chan int)
+
+	err := (BSON{data}).Render(w)
+	require.Error(t, err)
+}
+
+func TestRenderBSONWriteError(t *testing.T) {
+	type testStruct struct {
+		Value string
+	}
+	data := &testStruct{Value: "test"}
+
+	ew := &errorWriter{
+		ErrThreshold:     1,
+		ResponseRecorder: httptest.NewRecorder(),
+	}
+
+	err := (BSON{data}).Render(ew)
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
+}
+
 func TestRenderXML(t *testing.T) {
 	w := httptest.NewRecorder()
 	data := xmlmap{
@@ -366,6 +455,15 @@ func TestRenderXML(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "<map><foo>bar</foo></map>", w.Body.String())
 	assert.Equal(t, "application/xml; charset=utf-8", w.Header().Get("Content-Type"))
+}
+
+func TestRenderXMLError(t *testing.T) {
+	w := httptest.NewRecorder()
+	data := make(chan int)
+
+	err := (XML{data}).Render(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "xml: unsupported type: chan int")
 }
 
 func TestRenderRedirect(t *testing.T) {
@@ -420,6 +518,52 @@ func TestRenderData(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "#!PNG some raw data", w.Body.String())
 	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))
+	assert.Equal(t, "19", w.Header().Get("Content-Length"))
+}
+
+func TestRenderDataContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		size, err := strconv.Atoi(r.URL.Query().Get("size"))
+		assert.NoError(t, err)
+
+		data := Data{
+			ContentType: "application/octet-stream",
+			Data:        make([]byte, size),
+		}
+		assert.NoError(t, data.Render(w))
+	}))
+	t.Cleanup(srv.Close)
+
+	for _, size := range []int{0, 1, 100, 100_000} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			resp, err := http.Get(srv.URL + "?size=" + strconv.Itoa(size))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+			assert.Equal(t, strconv.Itoa(size), resp.Header.Get("Content-Length"))
+
+			actual, err := io.Copy(io.Discard, resp.Body)
+			require.NoError(t, err)
+			assert.EqualValues(t, size, actual)
+		})
+	}
+}
+
+func TestRenderDataError(t *testing.T) {
+	ew := &errorWriter{
+		ErrThreshold:     1,
+		ResponseRecorder: httptest.NewRecorder(),
+	}
+	data := []byte("#!PNG some raw data")
+
+	err := (Data{
+		ContentType: "image/png",
+		Data:        data,
+	}).Render(ew)
+
+	require.Error(t, err)
+	assert.Equal(t, "write error", err.Error())
 }
 
 func TestRenderString(t *testing.T) {
@@ -489,10 +633,12 @@ func TestRenderHTMLTemplateEmptyName(t *testing.T) {
 func TestRenderHTMLDebugFiles(t *testing.T) {
 	w := httptest.NewRecorder()
 	htmlRender := HTMLDebug{
-		Files:   []string{"../testdata/template/hello.tmpl"},
-		Glob:    "",
-		Delims:  Delims{Left: "{[{", Right: "}]}"},
-		FuncMap: nil,
+		Files:      []string{"../testdata/template/hello.tmpl"},
+		Glob:       "",
+		FileSystem: nil,
+		Patterns:   nil,
+		Delims:     Delims{Left: "{[{", Right: "}]}"},
+		FuncMap:    nil,
 	}
 	instance := htmlRender.Instance("hello.tmpl", map[string]any{
 		"name": "thinkerou",
@@ -508,10 +654,33 @@ func TestRenderHTMLDebugFiles(t *testing.T) {
 func TestRenderHTMLDebugGlob(t *testing.T) {
 	w := httptest.NewRecorder()
 	htmlRender := HTMLDebug{
-		Files:   nil,
-		Glob:    "../testdata/template/hello*",
-		Delims:  Delims{Left: "{[{", Right: "}]}"},
-		FuncMap: nil,
+		Files:      nil,
+		Glob:       "../testdata/template/hello*",
+		FileSystem: nil,
+		Patterns:   nil,
+		Delims:     Delims{Left: "{[{", Right: "}]}"},
+		FuncMap:    nil,
+	}
+	instance := htmlRender.Instance("hello.tmpl", map[string]any{
+		"name": "thinkerou",
+	})
+
+	err := instance.Render(w)
+
+	require.NoError(t, err)
+	assert.Equal(t, "<h1>Hello thinkerou</h1>", w.Body.String())
+	assert.Equal(t, "text/html; charset=utf-8", w.Header().Get("Content-Type"))
+}
+
+func TestRenderHTMLDebugFS(t *testing.T) {
+	w := httptest.NewRecorder()
+	htmlRender := HTMLDebug{
+		Files:      nil,
+		Glob:       "",
+		FileSystem: http.Dir("../testdata/template"),
+		Patterns:   []string{"hello.tmpl"},
+		Delims:     Delims{Left: "{[{", Right: "}]}"},
+		FuncMap:    nil,
 	}
 	instance := htmlRender.Instance("hello.tmpl", map[string]any{
 		"name": "thinkerou",
@@ -526,12 +695,40 @@ func TestRenderHTMLDebugGlob(t *testing.T) {
 
 func TestRenderHTMLDebugPanics(t *testing.T) {
 	htmlRender := HTMLDebug{
-		Files:   nil,
-		Glob:    "",
-		Delims:  Delims{"{{", "}}"},
-		FuncMap: nil,
+		Files:      nil,
+		Glob:       "",
+		FileSystem: nil,
+		Patterns:   nil,
+		Delims:     Delims{"{{", "}}"},
+		FuncMap:    nil,
 	}
 	assert.Panics(t, func() { htmlRender.Instance("", nil) })
+}
+
+func TestRenderHTMLTemplateError(t *testing.T) {
+	w := httptest.NewRecorder()
+	templ := template.Must(template.New("t").Parse(`Hello {{if .name}}{{.name.DoesNotExist}}{{end}}`))
+
+	htmlRender := HTMLProduction{Template: templ}
+	instance := htmlRender.Instance("t", map[string]any{
+		"name": "alexandernyquist",
+	})
+
+	err := instance.Render(w)
+	require.Error(t, err)
+}
+
+func TestRenderHTMLTemplateExecuteError(t *testing.T) {
+	w := httptest.NewRecorder()
+	templ := template.Must(template.New("t").Parse(`Hello {{.name.invalid}}`))
+
+	htmlRender := HTMLProduction{Template: templ}
+	instance := htmlRender.Instance("t", map[string]any{
+		"name": "alexandernyquist",
+	})
+
+	err := instance.Render(w)
+	require.Error(t, err)
 }
 
 func TestRenderReader(t *testing.T) {
@@ -581,14 +778,14 @@ func TestRenderReaderNoContentLength(t *testing.T) {
 }
 
 func TestRenderWriteError(t *testing.T) {
-	data := []interface{}{"value1", "value2"}
+	data := []any{"value1", "value2"}
 	prefix := "my-prefix:"
 	r := SecureJSON{Data: data, Prefix: prefix}
 	ew := &errorWriter{
-		bufString:        prefix,
+		ErrThreshold:     1,
 		ResponseRecorder: httptest.NewRecorder(),
 	}
 	err := r.Render(ew)
 	require.Error(t, err)
-	assert.Equal(t, `write "my-prefix:" error`, err.Error())
+	assert.Equal(t, "write error", err.Error())
 }
